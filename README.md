@@ -4,11 +4,11 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://pypi.org/project/iterm2-mcp-zanlan/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+**English** | [简体中文](README.zh-CN.md)
+
 An iTerm2 MCP server built around **visible execution**: every command is injected into a terminal session as **typed text (send text)** — exactly as if the user typed it — so everything stays on screen and under your supervision. **There is no exec / silent-execution tool of any kind.**
 
 Inspired by electerm's MCP integration and [ferrislucas/iterm-mcp](https://github.com/ferrislucas/iterm-mcp), customized for multi-server profile management.
-
-[中文说明见文末](#中文说明)
 
 ## Features
 
@@ -136,13 +136,3 @@ python3.12 test_e2e.py
 ## License
 
 MIT
-
----
-
-## 中文说明
-
-一个「可见执行」理念的 iTerm2 MCP server：所有命令都以**打字方式（send text）**注入终端 session，与用户手敲完全一致，全程肉眼可监督，**不提供任何 exec / 静默执行类工具**。
-
-特性：按 profile 名（或 GUID）连接 iTerm2 保存的服务器配置（重名报错列出 GUID，绝不静默连错机器）；session 以 profile 名自动注册，agent 可随时改名，后续全部按名寻址；profile 配置自动键入密码时检测到密码提示符自动补发回车完成登录。
-
-安装：`brew install pipx` 后 `pipx install iterm2-mcp-zanlan`，再在 MCP 客户端配置 `"command": "iterm2-mcp"`（详见上方英文版各方式）。工具集共 11 个：list_profiles / list_sessions / create_session / create_session_by_guid / focus_session / close_session / rename_session / send_command / send_text / read_screen / interrupt。
