@@ -41,6 +41,18 @@
 
 ## 安装与注册
 
+### 前置：安装 pipx 或 uv（任选其一，若尚未安装）
+
+方式一/方式二分别依赖 pipx / uvx 命令，没有的话先装（macOS 用 Homebrew）：
+
+```bash
+brew install pipx          # https://pipx.pypa.io
+# 或
+brew install uv            # https://docs.astral.sh/uv/ （uvx 随 uv 提供）
+```
+
+没有 Homebrew 的机器也可以用官方安装脚本（见上面两个链接），或跳过此步直接用方式三。
+
 ### 方式一：pipx 安装（推荐，隔离环境）
 
 ```bash
