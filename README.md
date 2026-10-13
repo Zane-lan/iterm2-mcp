@@ -4,62 +4,64 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://pypi.org/project/iterm2-mcp-zanlan/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-一个「可见执行」理念的 iTerm2 MCP server：所有命令都以**打字方式（send text）**注入终端 session，与用户手敲完全一致，全程肉眼可监督。**不提供任何 exec / 静默执行类工具。**
+An iTerm2 MCP server built around **visible execution**: every command is injected into a terminal session as **typed text (send text)** — exactly as if the user typed it — so everything stays on screen and under your supervision. **There is no exec / silent-execution tool of any kind.**
 
-灵感来自 electerm 的 MCP 集成与 [ferrislucas/iterm-mcp](https://github.com/ferrislucas/iterm-mcp)，但面向「多服务器 profile 管理」场景做了定制。
+Inspired by electerm's MCP integration and [ferrislucas/iterm-mcp](https://github.com/ferrislucas/iterm-mcp), customized for multi-server profile management.
 
-## 特性
+[中文说明见文末](#中文说明)
 
-- **连接 iTerm2 保存的 profiles**：按 profile 名（或 GUID）新建 tab；profile 重名时报错列出 GUID，绝不静默选错机器
-- **可见执行**：`send_command` 等价于用户手敲命令并回车；`send_text` 用于 REPL / 交互式程序的逐步输入。没有绕过终端屏幕的执行通道
-- **按名寻址**：建 tab 后 session 自动以 profile 名注册，agent 可随时重命名，之后所有工具用名字操作
-- **自动登录**：profile 配置了自动键入密码时，检测到密码提示符自动补发回车完成登录
-- 多 session 管理：列出 / 聚焦（切 tab）/ 关闭
+## Features
 
-## 工具集
+- **Connect via saved iTerm2 profiles**: open a new tab by profile name (or GUID); duplicate profile names raise an error listing all GUIDs — it never silently connects to the wrong machine
+- **Visible execution**: `send_command` is equivalent to typing a command and pressing Enter; `send_text` feeds input step by step for REPLs / interactive programs. There is no execution channel that bypasses the terminal screen
+- **Address sessions by name**: after a tab is created, its session is automatically registered under the profile name; the agent can rename it at any time, and all other tools address sessions by name
+- **Auto-login**: when a profile auto-types its password, the server detects the password prompt and sends the confirming Enter for you
+- Multi-session management: list / focus (switch tab) / close
 
-| 工具 | 说明 |
+## Tools
+
+| Tool | Description |
 |---|---|
-| `list_profiles` | 列出所有 iTerm2 profile 名（标注重名项） |
-| `list_sessions` | 列出所有 window/tab/session（id、name、mcp 名） |
-| `create_session` | 按 profile 名新建 tab，session 自动命名为 profile 名 |
-| `create_session_by_guid` | 按 GUID 新建 tab（用于 profile 重名时精确指定） |
-| `focus_session` | 把 iTerm2 窗口聚焦到指定 session（选中所在 tab 并置前） |
-| `close_session` | 关闭指定 session（按 name 或 id） |
-| `rename_session` | 重命名 session |
-| `send_command` | 向指定 session 发送一行命令（自动补 `\n`，打字可见） |
-| `send_text` | 向指定 session 发送任意文本/按键（REPL 用；不带换行） |
-| `read_screen` | 读取指定 session 当前屏幕内容（按行返回） |
-| `interrupt` | 向指定 session 发 Ctrl+C |
+| `list_profiles` | List all iTerm2 profile names (duplicates flagged) |
+| `list_sessions` | List all window/tab/session entries (id, name, MCP name) |
+| `create_session` | Open a new tab by profile name; session auto-named after the profile |
+| `create_session_by_guid` | Open a tab by profile GUID (for disambiguating duplicate names) |
+| `focus_session` | Focus the iTerm2 window on a session (select its tab and bring to front) |
+| `close_session` | Close a session (by name or id) |
+| `rename_session` | Rename a session |
+| `send_command` | Send one line of command to a session (auto `\n`, visible as typed) |
+| `send_text` | Send raw text/keystrokes to a session (for REPLs; no trailing newline) |
+| `read_screen` | Read a session's current screen contents (line by line) |
+| `interrupt` | Send Ctrl+C to a session |
 
-所有支持 name 寻址的工具同时接受 session id，`name_or_id` 参数自动识别。
+Every tool that accepts a name also accepts a session id — the `name_or_id` parameter auto-detects.
 
-## 环境要求
+## Requirements
 
-- macOS + iTerm2 ≥ 3.5（在 Settings → General → Magic → Enable Python API 开启）
+- macOS + iTerm2 ≥ 3.5, with Settings → General → Magic → Enable Python API turned on
 - Python 3.12+
 
-## 安装与注册
+## Install & Register
 
-### 前置：安装 pipx 或 uv（任选其一，若尚未安装）
+### Prerequisite: pipx or uv (pick one, if not installed yet)
 
-方式一/方式二分别依赖 pipx / uvx 命令，没有的话先装（macOS 用 Homebrew）：
+Method 1 / Method 2 depend on the `pipx` / `uvx` commands. Install one first (via Homebrew on macOS):
 
 ```bash
 brew install pipx          # https://pipx.pypa.io
-# 或
-brew install uv            # https://docs.astral.sh/uv/ （uvx 随 uv 提供）
+# or
+brew install uv            # https://docs.astral.sh/uv/ (provides uvx)
 ```
 
-没有 Homebrew 的机器也可以用官方安装脚本（见上面两个链接），或跳过此步直接用方式三。
+On machines without Homebrew, use the official installers at the links above — or skip ahead to Method 3.
 
-### 方式一：pipx 安装（推荐，隔离环境）
+### Method 1: pipx (recommended, isolated environment)
 
 ```bash
 pipx install iterm2-mcp-zanlan
 ```
 
-然后注册（Claude Desktop / .mcp.json 通用 JSON 配置）：
+Then register (Claude Desktop / .mcp.json JSON config):
 
 ```json
 {
@@ -71,13 +73,13 @@ pipx install iterm2-mcp-zanlan
 }
 ```
 
-Claude Code 一行命令：
+One-liner for Claude Code:
 
 ```bash
 claude mcp add iterm2 -- iterm2-mcp
 ```
 
-### 方式二：uvx 免安装直接跑
+### Method 2: uvx, zero install
 
 ```json
 {
@@ -90,12 +92,12 @@ claude mcp add iterm2 -- iterm2-mcp
 }
 ```
 
-### 方式三：从源码跑
+### Method 3: from source
 
 ```bash
 git clone https://github.com/Zane-lan/iterm2-mcp.git
 cd iterm2-mcp
-pip install iterm2 "mcp[cli]>=1,<2"   # homebrew Python 需加 --user --break-system-packages
+pip install iterm2 "mcp[cli]>=1,<2"   # homebrew Python: add --user --break-system-packages
 ```
 
 ```json
@@ -109,28 +111,38 @@ pip install iterm2 "mcp[cli]>=1,<2"   # homebrew Python 需加 --user --break-sy
 }
 ```
 
-## 设计决策
+## Design decisions
 
-1. **profile 重名防呆**：按名字建 tab 时若命中多个 profile，报错并列出所有重名 profile 的 GUID，由用户选择或去 iTerm2 删除重名项；另提供按 GUID 建立的工具
-2. **建 tab 自动命名**：通过 profile 建 tab 后，session 自动命名为 profile 名，后续按 name 寻址
-3. **name 寻址以 MCP 维护的注册表为准**（`~/.config/iterm2-mcp/registry.json`）——实测发现 shell integration 会在每条命令后用 OSC 转义序列把 session 标题重置回自动名（`~ (-zsh)`），`session.name` 不可靠，所以 `set_name` 仅尽力让 tab 标题可见，寻址不受影响；注册表未命中时兜底做实时 `session.name` 前缀匹配
-4. **只 send，不 exec**：工具集里不存在绕过终端屏幕的执行通道
+1. **Duplicate-profile protection**: opening a tab by name that matches multiple profiles raises an error listing every GUID — the user picks one (or deletes the duplicates in iTerm2); a GUID-based tool is provided as the escape hatch
+2. **Auto-naming on creation**: a tab opened via a profile is registered under the profile name, so later tools can address it by name
+3. **Name addressing uses an MCP-maintained registry** (`~/.config/iterm2-mcp/registry.json`) — in practice, shell integration resets the session title back to an automatic name (e.g. `~ (-zsh)`) after every command via OSC escape sequences, so `session.name` is unreliable; `set_name` is still attempted for a readable tab title, but addressing never depends on it; a live `session.name` prefix match serves as fallback when the registry misses
+4. **Send-only, no exec**: no tool in the set bypasses the terminal screen
 
-## 验证
+## Verification
 
-端到端集成测试（会在 iTerm2 真实开 tab / 发命令 / Ctrl+C / 关 tab）：
+The end-to-end integration test runs against a real iTerm2 (opens tabs, sends commands, Ctrl+C, closes tabs):
 
 ```bash
 python3.12 test_e2e.py
 ```
 
-## 实现要点（踩坑记录）
+## Implementation notes (pitfalls found the hard way)
 
-- iTerm2 3.6.x 的 Python API 不再监听 TCP 1912，改走 Unix Domain Socket（`~/Library/Application Support/iTerm2/private/socket`），官方 `iterm2` 包会自动探测
-- 在自定义事件循环里使用 iterm2 库，必须同时启动 `Connection._async_dispatch_forever` 分发循环，否则所有 RPC 挂起无响应
-- `iterm2` 包 2.30 的入口是 `iterm2.run_until_complete(coro)`；`ScreenContents` 用 `line(i)` 方法；`App.current_session` 已移除
-- FastMCP 的 lifespan 必须在 `FastMCP(...)` 构造时传入，事后设 `settings.lifespan` 无效
+- iTerm2 3.6.x no longer listens on TCP 1912; the Python API moved to a Unix Domain Socket (`~/Library/Application Support/iTerm2/private/socket`), which the official `iterm2` package auto-detects
+- When driving the iterm2 package from a custom event loop, you must also start the `Connection._async_dispatch_forever` dispatch loop — otherwise every RPC hangs forever
+- `iterm2` 2.30: entry point is `iterm2.run_until_complete(coro)`; `ScreenContents` uses the `line(i)` method; `App.current_session` is gone
+- FastMCP's lifespan must be passed to the `FastMCP(...)` constructor; setting `settings.lifespan` afterwards has no effect
 
 ## License
 
 MIT
+
+---
+
+## 中文说明
+
+一个「可见执行」理念的 iTerm2 MCP server：所有命令都以**打字方式（send text）**注入终端 session，与用户手敲完全一致，全程肉眼可监督，**不提供任何 exec / 静默执行类工具**。
+
+特性：按 profile 名（或 GUID）连接 iTerm2 保存的服务器配置（重名报错列出 GUID，绝不静默连错机器）；session 以 profile 名自动注册，agent 可随时改名，后续全部按名寻址；profile 配置自动键入密码时检测到密码提示符自动补发回车完成登录。
+
+安装：`brew install pipx` 后 `pipx install iterm2-mcp-zanlan`，再在 MCP 客户端配置 `"command": "iterm2-mcp"`（详见上方英文版各方式）。工具集共 11 个：list_profiles / list_sessions / create_session / create_session_by_guid / focus_session / close_session / rename_session / send_command / send_text / read_screen / interrupt。
