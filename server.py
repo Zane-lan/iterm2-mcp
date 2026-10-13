@@ -1,0 +1,328 @@
+"""iTerm2 MCP Server — 可见执行（send-only）的 iTerm2 操作工具集.
+
+设计决策（用户拍板）:
+- profile 重名时报错并列出重名项 GUID，不静默选其一
+- 按 profile 建 tab 后自动把 session 名设为 profile 名
+- name 匹配容忍 iTerm2 自动追加的 shell 后缀（"name (-zsh)"）
+- 只提供 send 式注入，无 exec 式静默执行
+"""
+import asyncio
+import contextlib
+from typing import AsyncIterator, Optional
+
+import iterm2
+from mcp.server.fastmcp import FastMCP
+
+# iterm2.Connection 的连接由 lifespan 建立，各工具通过模块级变量访问
+_conn: Optional[iterm2.Connection] = None
+
+
+@contextlib.asynccontextmanager
+async def app_lifespan(server: FastMCP) -> AsyncIterator[dict]:
+    global _conn
+    # 复刻 iterm2.Connection.run() 的接线：async_connect(coro) 建 WebSocket 后
+    # 执行 coro 作为连接主体；RPC 响应靠 _async_dispatch_forever 分发，
+    # 不启动它所有请求都会挂起。coro 里先 set ready 再常驻分发。
+    conn = iterm2.Connection()
+    ready = asyncio.Event()
+
+    async def _hold_and_dispatch(c):
+        ready.set()
+        await conn._async_dispatch_forever(c, asyncio.get_event_loop())
+
+    ws_task = asyncio.ensure_future(conn.async_connect(_hold_and_dispatch))
+    deadline = asyncio.get_event_loop().time() + 10
+    while not ready.is_set():
+        if asyncio.get_event_loop().time() > deadline or ws_task.done():
+            raise RuntimeError("连接 iTerm2 失败（10 秒超时），请确认已开启 Python API")
+        await asyncio.sleep(0.05)
+    _conn = conn
+    try:
+        yield {"connection": _conn}
+    finally:
+        _conn = None
+        ws_task.cancel()
+
+
+mcp = FastMCP("iterm2", lifespan=app_lifespan)
+
+# name -> session_id 注册表。
+# 背景: shell integration 会在每条命令后用 OSC 转义序列把 session 标题重置回
+# 自动名（如 "~ (-zsh)"），session.name 不可靠。寻址以本注册表为准，
+# set_name 仅尽力而为地让 tab 标题可见。
+import json
+import os
+
+REGISTRY_PATH = os.path.expanduser("~/.config/iterm2-mcp/registry.json")
+
+
+def _registry_load() -> dict[str, str]:
+    try:
+        with open(REGISTRY_PATH) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _registry_save(reg: dict[str, str]) -> None:
+    os.makedirs(os.path.dirname(REGISTRY_PATH), exist_ok=True)
+    with open(REGISTRY_PATH, "w") as f:
+        json.dump(reg, f, ensure_ascii=False, indent=2)
+
+
+def _registry_set(name: str, session_id: str) -> None:
+    reg = _registry_load()
+    # 同一 session 换名时清理旧名
+    reg = {k: v for k, v in reg.items() if v != session_id}
+    reg[name] = session_id
+    _registry_save(reg)
+
+
+def _registry_id_for(name_or_id: str) -> Optional[str]:
+    """注册表精确命中则返回 session_id，否则 None."""
+    return _registry_load().get(name_or_id)
+
+
+
+
+async def _get_app() -> iterm2.App:
+    return await iterm2.async_get_app(_conn)
+
+
+def _name_matches(session_name: str, target: str) -> bool:
+    """session 名可能是 "target" 或 iTerm2 自动加后缀的 "target (xxx)"."""
+    return session_name == target or session_name.startswith(target + " (")
+
+
+async def _find_sessions(name_or_id: str) -> list[iterm2.Session]:
+    """按注册表名 > session_id > 实时 session.name 的顺序查找，多命中时抛错."""
+    app = await _get_app()
+    # 1. 注册表精确命中
+    reg_id = _registry_id_for(name_or_id)
+    for window in app.terminal_windows:
+        for tab in window.tabs:
+            for session in tab.sessions:
+                if session.session_id == name_or_id or (
+                    reg_id and session.session_id == reg_id
+                ):
+                    return [session]
+    # 2. 实时 session.name 兜底（用户在 iTerm2 里手动命名的场景）
+    hits = []
+    for window in app.terminal_windows:
+        for tab in window.tabs:
+            for session in tab.sessions:
+                name = await session.async_get_variable("session.name")
+                if _name_matches(name, name_or_id):
+                    hits.append(session)
+    return hits
+
+
+async def _require_session(name_or_id: str) -> iterm2.Session:
+    hits = await _find_sessions(name_or_id)
+    if not hits:
+        raise ValueError(f"未找到 session: {name_or_id!r}，请先 list_sessions 查看")
+    if len(hits) > 1:
+        names = [await s.async_get_variable("session.name") for s in hits]
+        ids = [s.session_id for s in hits]
+        listing = "\n".join(f"- name={n!r} id={i}" for n, i in zip(names, ids))
+        raise ValueError(
+            f"session 名 {name_or_id!r} 命中 {len(hits)} 个，请用完整 id 指定:\n{listing}"
+        )
+    return hits[0]
+
+
+async def _resolve_profile(name: str) -> iterm2.Profile:
+    """按名字解析 profile；重名时报错列出 GUID 让用户选择."""
+    profiles = await iterm2.Profile.async_get(_conn)
+    matches = [p for p in profiles if p.name == name]
+    if not matches:
+        raise ValueError(f"未找到 profile: {name!r}，请先 list_profiles 查看")
+    if len(matches) > 1:
+        guids = [p.guid for p in matches]
+        listing = "\n".join(f"- guid={g}" for g in guids)
+        raise ValueError(
+            f"profile 名 {name!r} 存在重名（{len(matches)} 个），"
+            f"请去 iTerm2 设置删除重名项，或用 create_session_by_guid 指定:\n{listing}"
+        )
+    return matches[0]
+
+
+def _set_name_best_effort(session: iterm2.Session, name: str) -> None:
+    """尽力设置 tab 标题。shell integration 会重置它，寻址不依赖此名字."""
+    async def _do():
+        try:
+            await session.async_set_name(name)
+        except Exception:
+            pass
+    asyncio.ensure_future(_do())
+
+
+@mcp.tool()
+async def list_profiles() -> str:
+    """列出 iTerm2 所有 profile 名字，重名的会标注并列出 GUID."""
+    profiles = await iterm2.Profile.async_get(_conn)
+    by_name: dict[str, list[str]] = {}
+    for p in profiles:
+        by_name.setdefault(p.name, []).append(p.guid)
+    lines = []
+    for name, guids in sorted(by_name.items()):
+        if len(guids) > 1:
+            lines.append(f"{name}  [重名! guids: {', '.join(guids)}]")
+        else:
+            lines.append(name)
+    return f"共 {len(profiles)} 个 profile:\n" + "\n".join(lines)
+
+
+@mcp.tool()
+async def list_sessions() -> str:
+    """列出所有 iTerm2 窗口/tab/session，含 session id、name、所属 profile."""
+    app = await _get_app()
+    reg = _registry_load()
+    id_to_reg_name = {v: k for k, v in reg.items()}
+    lines = []
+    for w_idx, window in enumerate(app.terminal_windows):
+        for t_idx, tab in enumerate(window.tabs):
+            for s in tab.sessions:
+                name = await s.async_get_variable("session.name")
+                profile = await s.async_get_variable("session.originalProfile")
+                reg_name = id_to_reg_name.get(s.session_id)
+                reg_tag = f"  mcp名={reg_name!r}" if reg_name else ""
+                lines.append(
+                    f"window{w_idx}/tab{t_idx}  name={name!r}{reg_tag}  "
+                    f"profile={profile!r}  id={s.session_id}"
+                )
+    if not lines:
+        return "没有打开的终端会话"
+    return "\n".join(lines)
+
+
+async def _create_tab(profile: str = None, guid: str = None, command: str = None) -> iterm2.Session:
+    app = await _get_app()
+    window = app.current_terminal_window
+    if window is None:
+        raise ValueError("没有已打开的 iTerm2 窗口，请先手动打开一个 iTerm2 窗口")
+    tab = await window.async_create_tab(profile=profile, command=command, select=False)
+    if tab is None or not tab.sessions:
+        raise ValueError("tab 创建失败（返回为空）")
+    return tab.sessions[0]
+
+
+PASSWORD_PROMPTS = ("password:", "password：", "密码:")
+
+
+async def _press_enter_on_password_prompt(session: iterm2.Session, wait: float = 8.0) -> str:
+    """profile 自动键入密码后等回车确认。监测到密码提示符就补发回车（send 式可见），
+    超时未出现则不动作。返回动作说明。"""
+    deadline = asyncio.get_event_loop().time() + wait
+    while asyncio.get_event_loop().time() < deadline:
+        contents = await session.async_get_screen_contents()
+        last = ""
+        for i in range(contents.number_of_lines):
+            text = contents.line(i).string
+            if text.strip():
+                last = text.lower()
+        if any(p in last for p in PASSWORD_PROMPTS):
+            await asyncio.sleep(0.5)  # 等密码自动键入完成
+            await session.async_send_text("\r")
+            return "检测到密码提示，已自动补发回车完成登录"
+        await asyncio.sleep(0.3)
+    return ""
+
+
+@mcp.tool()
+async def create_session(profile: str, command: str = "") -> str:
+    """按 profile 名新建一个 tab，session 自动命名为 profile 名。
+
+    profile 重名时会报错并列出所有重名 GUID。command 可选，为 tab 启动命令。
+    若 profile 配置了自动键入密码，会在密码提示符出现后自动补发回车完成登录。
+    """
+    await _resolve_profile(profile)
+    session = await _create_tab(profile=profile, command=command or None)
+    _registry_set(profile, session.session_id)
+    _set_name_best_effort(session, profile)
+    login_note = await _press_enter_on_password_prompt(session)
+    note = f"（{login_note}）" if login_note else ""
+    return f"已创建 session: name={profile!r}  id={session.session_id}{note}"
+
+
+@mcp.tool()
+async def create_session_by_guid(guid: str, session_name: str = "") -> str:
+    """按 GUID 新建 tab（用于 profile 重名时精确指定），可选自定义 session 名."""
+    profiles = await iterm2.Profile.async_get(_conn, guids=[guid])
+    if not profiles:
+        raise ValueError(f"未找到 guid={guid!r} 的 profile")
+    session = await _create_tab(profile=profiles[0].name)
+    effective_name = session_name or profiles[0].name
+    _registry_set(effective_name, session.session_id)
+    if session_name:
+        _set_name_best_effort(session, session_name)
+    return f"已创建 session: name={effective_name!r}  id={session.session_id}"
+
+
+@mcp.tool()
+async def focus_session(name_or_id: str) -> str:
+    """把 iTerm2 窗口聚焦到指定 session（选中其所在 tab 并把窗口带到前台）."""
+    session = await _require_session(name_or_id)
+    await session.async_activate()
+    return f"已聚焦到 session {name_or_id!r}"
+
+
+@mcp.tool()
+async def close_session(name_or_id: str) -> str:
+    """关闭指定 session（按 name 或 session id）。"""
+    session = await _require_session(name_or_id)
+    await session.async_close()
+    reg = _registry_load()
+    reg = {k: v for k, v in reg.items() if v != session.session_id}
+    _registry_save(reg)
+    return f"已关闭 session {name_or_id!r}"
+
+
+@mcp.tool()
+async def rename_session(name_or_id: str, new_name: str) -> str:
+    """重命名指定 session（iTerm2 显示时会自动带 shell 后缀）."""
+    session = await _require_session(name_or_id)
+    _registry_set(new_name, session.session_id)
+    _set_name_best_effort(session, new_name)
+    return f"已重命名为 {new_name!r}（寻址已更新；tab 标题可能被 shell 重置回自动名）"
+
+
+@mcp.tool()
+async def send_command(name_or_id: str, command: str) -> str:
+    """向指定 session 发送一行命令（自动补换行，等价于用户手敲回车，终端可见）."""
+    session = await _require_session(name_or_id)
+    await session.async_send_text(command + "\n")
+    return f"已发送: {command!r}（1 秒后可用 read_screen 查看输出）"
+
+
+@mcp.tool()
+async def send_text(name_or_id: str, text: str) -> str:
+    """向指定 session 发送原始文本（不补换行），用于 REPL/交互式程序的逐步输入."""
+    session = await _require_session(name_or_id)
+    await session.async_send_text(text)
+    return f"已发送文本（{len(text)} 字符）"
+
+
+@mcp.tool()
+async def read_screen(name_or_id: str, max_lines: int = 40) -> str:
+    """读取指定 session 当前屏幕内容（可见区域，从上到下）."""
+    session = await _require_session(name_or_id)
+    contents = await session.async_get_screen_contents()
+    lines = []
+    for i in range(contents.number_of_lines):
+        text = contents.line(i).string
+        if text.strip():
+            lines.append(text.rstrip())
+    return "\n".join(lines[-max_lines:]) if lines else "(屏幕为空)"
+
+
+@mcp.tool()
+async def interrupt(name_or_id: str) -> str:
+    """向指定 session 发送 Ctrl+C，中断当前正在运行的命令."""
+    session = await _require_session(name_or_id)
+    await session.async_send_text("\x03")
+    return "已发送 Ctrl+C"
+
+
+if __name__ == "__main__":
+    mcp.run()
