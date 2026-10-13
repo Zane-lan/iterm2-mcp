@@ -1,5 +1,9 @@
 # iterm2-mcp
 
+[![PyPI version](https://img.shields.io/pypi/v/iterm2-mcp-zanlan.svg)](https://pypi.org/project/iterm2-mcp-zanlan/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://pypi.org/project/iterm2-mcp-zanlan/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 一个「可见执行」理念的 iTerm2 MCP server：所有命令都以**打字方式（send text）**注入终端 session，与用户手敲完全一致，全程肉眼可监督。**不提供任何 exec / 静默执行类工具。**
 
 灵感来自 electerm 的 MCP 集成与 [ferrislucas/iterm-mcp](https://github.com/ferrislucas/iterm-mcp)，但面向「多服务器 profile 管理」场景做了定制。
