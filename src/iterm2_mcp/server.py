@@ -324,5 +324,9 @@ async def interrupt(name_or_id: str) -> str:
     return "已发送 Ctrl+C"
 
 
-if __name__ == "__main__":
+def main():
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

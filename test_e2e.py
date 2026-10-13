@@ -14,8 +14,8 @@ import sys
 
 import iterm2
 
-sys.path.insert(0, "/Volumes/data/project/vibe_coding/iterm2_exp")
-import server  # noqa: E402
+sys.path.insert(0, __import__("os").path.join(__import__("os").path.dirname(__import__("os").path.abspath(__file__)), "src"))
+from iterm2_mcp import server  # noqa: E402
 
 PASS, FAIL = [], []
 

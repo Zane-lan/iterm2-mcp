@@ -35,32 +35,62 @@
 - macOS + iTerm2 ≥ 3.5（在 Settings → General → Magic → Enable Python API 开启）
 - Python 3.12+
 
-## 安装
+## 安装与注册
+
+### 方式一：pipx 安装（推荐，隔离环境）
 
 ```bash
-pip install iterm2 "mcp[cli]"
-# homebrew Python 需加 --user --break-system-packages
+pipx install iterm2-mcp-zanlan
 ```
 
-## 注册
+然后注册（Claude Desktop / .mcp.json 通用 JSON 配置）：
 
-JSON 配置方式（Claude Desktop / .mcp.json 通用）：
+```json
+{
+  "mcpServers": {
+    "iterm2": {
+      "command": "iterm2-mcp"
+    }
+  }
+}
+```
+
+Claude Code 一行命令：
+
+```bash
+claude mcp add iterm2 -- iterm2-mcp
+```
+
+### 方式二：uvx 免安装直接跑
+
+```json
+{
+  "mcpServers": {
+    "iterm2": {
+      "command": "uvx",
+      "args": ["iterm2-mcp-zanlan"]
+    }
+  }
+}
+```
+
+### 方式三：从源码跑
+
+```bash
+git clone https://github.com/Zane-lan/iterm2-mcp.git
+cd iterm2-mcp
+pip install iterm2 "mcp[cli]>=1,<2"   # homebrew Python 需加 --user --break-system-packages
+```
 
 ```json
 {
   "mcpServers": {
     "iterm2": {
       "command": "/path/to/python3.12",
-      "args": ["/path/to/server.py"]
+      "args": ["/path/to/iterm2-mcp/src/iterm2_mcp/server.py"]
     }
   }
 }
-```
-
-Claude Code 命令行方式：
-
-```bash
-claude mcp add iterm2 -- /path/to/python3.12 /path/to/server.py
 ```
 
 ## 设计决策
