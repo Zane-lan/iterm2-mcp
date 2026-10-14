@@ -324,6 +324,224 @@ async def interrupt(name_or_id: str) -> str:
     return "已发送 Ctrl+C"
 
 
+# ---------- 文件传输 ----------
+
+TRANSFER_TIMEOUT = 120  # scp 等待完成的兜底超时（秒）
+
+
+def _local_pubkey() -> str:
+    """读 Mac 默认公钥（优先 ed25519）."""
+    home = os.path.expanduser("~")
+    for name in ("id_ed25519.pub", "id_rsa.pub"):
+        path = os.path.join(home, ".ssh", name)
+        if os.path.exists(path):
+            with open(path) as f:
+                return f.read().strip()
+    raise ValueError("未找到 SSH 公钥（~/.ssh/id_ed25519.pub），请先 ssh-keygen -t ed25519 生成")
+
+
+async def _find_local_session() -> iterm2.Session:
+    """找一个本地 shell session（无 SSH 的 tab），用于 Mac 主动发起 scp."""
+    app = await _get_app()
+    reg = _registry_load()
+    # 优先用注册表里登记过的 local-shell
+    reg_id = reg.get("local-shell")
+    for window in app.terminal_windows:
+        for tab in window.tabs:
+            for s in tab.sessions:
+                if s.session_id == reg_id:
+                    return s
+    # 兜底：找 profile 为 Default / 本地 shell 的 session（无 host 变量）
+    for window in app.terminal_windows:
+        for tab in window.tabs:
+            for s in tab.sessions:
+                try:
+                    host = await s.async_get_variable("session.host")
+                except Exception:
+                    host = None
+                if not host:
+                    return s
+    raise ValueError("没有本地 shell session，请先 create_local_session 或手动开一个本地 tab")
+
+
+@mcp.tool()
+async def create_local_session() -> str:
+    """新建一个本地 shell tab，注册为 'local-shell'，用于文件传输时 Mac 主动发起 scp."""
+    session = await _create_tab(profile="Default")
+    _registry_set("local-shell", session.session_id)
+    return f"已创建本地 shell session: id={session.session_id}（注册名 local-shell）"
+
+
+async def _wait_transfer_done(session: iterm2.Session, timeout: float = TRANSFER_TIMEOUT) -> str:
+    """等待 scp 传输结束：提示符回归（屏幕最后一行不再变化且含主机名提示）或出现错误."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    last_screen = ""
+    stable_since = None
+    while asyncio.get_event_loop().time() < deadline:
+        contents = await session.async_get_screen_contents()
+        lines = [contents.line(i).string.rstrip() for i in range(contents.number_of_lines)
+                 if contents.line(i).string.strip()]
+        screen = "\n".join(lines)
+        if screen != last_screen:
+            last_screen = screen
+            stable_since = None
+        else:
+            if stable_since is None:
+                stable_since = asyncio.get_event_loop().time()
+            elif asyncio.get_event_loop().time() - stable_since >= 2.0:
+                last = lines[-1] if lines else ""
+                low = last.lower()
+                if "password" in low or "yes/no" in low:
+                    return "NEED_INPUT: " + last
+                if "denied" in low or "not found" in low or "no such file" in low:
+                    return "ERROR: " + last
+                return "DONE\n" + screen[-500:]
+        await asyncio.sleep(0.5)
+    return "TIMEOUT: 传输超过 " + str(int(timeout)) + " 秒仍未结束"
+
+
+@mcp.tool()
+async def upload_file(session_name: str, local_path: str, remote_path: str,
+                      server_user: str, server_host: str) -> str:
+    """上传本地文件到服务器（Mac 主动 scp，任何网络拓扑可用）.
+
+    在 local-shell session 里执行: scp local_path server_user@server_host:remote_path
+    若出现密码提示，请在 local-shell tab 里手动输入服务器密码。
+    """
+    if not os.path.exists(local_path):
+        raise ValueError(f"本地文件不存在: {local_path}")
+    local = await _find_local_session()
+    await local.async_send_text("clear\n")
+    await asyncio.sleep(0.3)
+    await local.async_send_text(
+        f'scp "{local_path}" "{server_user}@{server_host}:{remote_path}"\n'
+    )
+    result = await _wait_transfer_done(local)
+    if result.startswith("NEED_INPUT"):
+        return f"scp 已发出，等待认证。请在 local-shell tab 里输入服务器密码: {result[11:]}"
+    if result.startswith("ERROR"):
+        return f"传输失败: {result[6:]}"
+    if result.startswith("TIMEOUT"):
+        return result
+    return f"上传完成: {local_path} -> {server_user}@{server_host}:{remote_path}\n终端输出:\n{result[5:]}"
+
+
+@mcp.tool()
+async def download_file(session_name: str, remote_path: str, local_path: str,
+                        server_user: str, server_host: str) -> str:
+    """从服务器下载文件到本地（Mac 主动 scp，任何网络拓扑可用）.
+
+    在 local-shell session 里执行: scp server_user@server_host:remote_path local_path
+    若出现密码提示，请在 local-shell tab 里手动输入服务器密码。
+    """
+    local = await _find_local_session()
+    if os.path.isdir(local_path):
+        local_path = os.path.join(local_path, os.path.basename(remote_path))
+    await local.async_send_text("clear\n")
+    await asyncio.sleep(0.3)
+    await local.async_send_text(
+        f'scp "{server_user}@{server_host}:{remote_path}" "{local_path}"\n'
+    )
+    result = await _wait_transfer_done(local)
+    if result.startswith("NEED_INPUT"):
+        return f"scp 已发出，等待认证。请在 local-shell tab 里输入服务器密码: {result[11:]}"
+    if result.startswith("ERROR"):
+        return f"传输失败: {result[6:]}"
+    if result.startswith("TIMEOUT"):
+        return result
+    exists = os.path.exists(local_path)
+    return (f"下载完成: {server_user}@{server_host}:{remote_path} -> {local_path}"
+            f"（本地文件{'已生成' if exists else '未找到!'}）\n终端输出:\n{result[5:]}")
+
+
+async def _preset_host_key(local: iterm2.Session, server_host: str) -> bool:
+    """在本地 session 里预扫描目标服务器 host key 写入 known_hosts，消除首连指纹确认.
+
+    已知主机则跳过。返回是否新扫描了。
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "ssh-keygen", "-lF", server_host,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await proc.wait()
+    if proc.returncode == 0:
+        return False
+    scan = await asyncio.create_subprocess_exec(
+        "ssh-keyscan", "-T", "5", server_host,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    keys, _ = await scan.communicate()
+    valid = [l for l in keys.decode().splitlines() if l and not l.startswith("#")]
+    if not valid:
+        return False
+    home = os.path.expanduser("~")
+    with open(os.path.join(home, ".ssh", "known_hosts"), "a") as f:
+        f.write("\n".join(valid) + "\n")
+    return True
+
+
+@mcp.tool()
+async def distribute_key(name_or_id: str, server_user: str, server_host: str) -> str:
+    """向已登录的服务器 session 分发 Mac 公钥（send 注入 authorized_keys，无需密码）.
+
+    同时预扫描服务器 host key 到本地 known_hosts，消除之后 scp 的首连指纹确认。
+    一次性配置；之后该服务器对 Mac 免密，scp/ssh 全自动。
+    """
+    session = await _require_session(name_or_id)
+    pubkey = _local_pubkey()
+    escaped = pubkey.replace("'", "'\\''")
+    await session.async_send_text(
+        f"mkdir -p ~/.ssh && echo '{escaped}' >> ~/.ssh/authorized_keys "
+        f"&& chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && echo KEY_DISTRIBUTED\n"
+    )
+    await asyncio.sleep(2)
+    contents = await session.async_get_screen_contents()
+    screen = "".join(contents.line(i).string for i in range(contents.number_of_lines))
+    scanned = ""
+    try:
+        local = await _find_local_session()
+        if await _preset_host_key(local, server_host):
+            scanned = "，并已预扫描 host key（之后 scp 无首次指纹确认）"
+    except ValueError:
+        pass  # 没有本地 session 时跳过预扫描，不阻塞公钥分发
+    if "KEY_DISTRIBUTED" in screen:
+        return f"公钥已分发到 {name_or_id}{scanned}。之后对 {server_user}@{server_host} 的 scp/ssh 免密"
+    return f"分发命令已发出，请用 read_screen 确认结果{scanned}"
+
+
+@mcp.tool()
+async def check_transfer(session_name: str, remote_path: str, local_path: str,
+                         server_user: str, server_host: str) -> str:
+    """传输后完整性校验：对比远端 md5sum 与本地 md5."""
+    import hashlib
+    def _md5(p):
+        h = hashlib.md5()
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    if not os.path.exists(local_path):
+        return f"本地文件不存在: {local_path}"
+    local_md5 = _md5(local_path)
+    local = await _find_local_session()
+    await local.async_send_text(
+        f'ssh {server_user}@{server_host} "md5sum {remote_path}"\n'
+    )
+    result = await _wait_transfer_done(local, timeout=30)
+    if result.startswith("NEED_INPUT"):
+        return f"等待认证。请在 local-shell tab 里输入服务器密码: {result[11:]}"
+    remote_line = result
+    import re
+    m = re.search(r"([0-9a-f]{32})", remote_line)
+    if not m:
+        return f"未解析到远端 md5。终端输出:\n{result[-300:]}"
+    remote_md5 = m.group(1)
+    ok = remote_md5 == local_md5
+    return f"本地 {local_md5} / 远端 {remote_md5} -> {'✅ 一致' if ok else '❌ 不一致'}"
+
+
 def main():
     mcp.run()
 

@@ -16,6 +16,7 @@
 - **可见执行**：`send_command` 等价于用户手敲命令并回车；`send_text` 用于 REPL / 交互式程序的逐步输入。没有绕过终端屏幕的执行通道
 - **按名寻址**：建 tab 后 session 自动以 profile 名注册，agent 可随时重命名，之后所有工具用名字操作
 - **自动登录**：profile 配置了自动键入密码时，检测到密码提示符自动补发回车完成登录
+- **文件传输**：`upload_file` / `download_file` 在本地 shell session 里驱动 scp（Mac 主动出站，公网服务器同样可用）；`distribute_key` 把 Mac 公钥 send 注入已登录的服务器 session（无需密码），之后传输全自动免密；`check_transfer` 双端 md5 校验
 - 多 session 管理：列出 / 聚焦（切 tab）/ 关闭
 
 ## 工具集
@@ -33,6 +34,11 @@
 | `send_text` | 向指定 session 发送任意文本/按键（REPL 用；不带换行） |
 | `read_screen` | 读取指定 session 当前屏幕内容（按行返回） |
 | `interrupt` | 向指定 session 发 Ctrl+C |
+| `create_local_session` | 新建本地 shell tab 并注册为 `local-shell`（传输工具使用） |
+| `upload_file` | 上传本地文件到服务器（scp，Mac 主动发起） |
+| `download_file` | 从服务器下载文件到本地（scp，Mac 主动发起） |
+| `distribute_key` | 向已登录服务器 session 分发 Mac 公钥 + 预扫描 host key（一次性，之后免密） |
+| `check_transfer` | 双端 md5 对比校验传输完整性 |
 
 所有支持 name 寻址的工具同时接受 session id，`name_or_id` 参数自动识别。
 

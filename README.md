@@ -16,6 +16,7 @@ Inspired by electerm's MCP integration and [ferrislucas/iterm-mcp](https://githu
 - **Visible execution**: `send_command` is equivalent to typing a command and pressing Enter; `send_text` feeds input step by step for REPLs / interactive programs. There is no execution channel that bypasses the terminal screen
 - **Address sessions by name**: after a tab is created, its session is automatically registered under the profile name; the agent can rename it at any time, and all other tools address sessions by name
 - **Auto-login**: when a profile auto-types its password, the server detects the password prompt and sends the confirming Enter for you
+- **File transfer**: `upload_file` / `download_file` drive `scp` from a local shell session (Mac-initiated outbound connection — works with public-internet servers); `distribute_key` sends your Mac's public key into an already-logged-in server session (no password needed), after which transfers run fully automatically; `check_transfer` verifies md5 on both ends
 - Multi-session management: list / focus (switch tab) / close
 
 ## Tools
@@ -33,6 +34,11 @@ Inspired by electerm's MCP integration and [ferrislucas/iterm-mcp](https://githu
 | `send_text` | Send raw text/keystrokes to a session (for REPLs; no trailing newline) |
 | `read_screen` | Read a session's current screen contents (line by line) |
 | `interrupt` | Send Ctrl+C to a session |
+| `create_local_session` | Open a local shell tab registered as `local-shell` (used by transfer tools) |
+| `upload_file` | Upload a local file to a server via scp (Mac-initiated) |
+| `download_file` | Download a server file to local via scp (Mac-initiated) |
+| `distribute_key` | Send Mac's public key into a logged-in server session + pre-scan host key (one-time, passwordless afterwards) |
+| `check_transfer` | Verify transfer integrity by comparing remote/local md5 |
 
 Every tool that accepts a name also accepts a session id — the `name_or_id` parameter auto-detects.
 
