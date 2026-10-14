@@ -358,40 +358,40 @@ def _local_pubkey() -> str:
     raise ValueError("未找到 SSH 公钥（~/.ssh/id_ed25519.pub），请先 ssh-keygen -t ed25519 生成")
 
 
+async def _is_local_session(s: iterm2.Session) -> bool:
+    """判定本地 shell session: profile 的启动命令不是 ssh（SSH profile 的 Command 是 "ssh user@host"）."""
+    try:
+        prof = await s.async_get_profile()
+        cmd = prof._simple_get("Command") or ""
+        return not cmd.strip().lower().startswith("ssh")
+    except Exception:
+        return False
+
+
 async def _find_local_session() -> iterm2.Session:
-    """找一个本地 shell session（无 SSH 的 tab），用于 Mac 主动发起 scp."""
+    """找一个本地 shell session（非 SSH 的 tab），用于 Mac 主动发起 scp.
+
+    判定: session profile 的 Command 不是 ssh 开头（实测 session.host / session.tty
+    都无法区分本地与 SSH tab，profile Command 是唯一可靠信号）。
+    """
     app = await _get_app()
-    reg = _registry_load()
-    # 优先用注册表里登记过的 local-shell
-    reg_id = reg.get("local-shell")
-    for window in app.terminal_windows:
-        for tab in window.tabs:
-            for s in tab.sessions:
-                if s.session_id == reg_id:
-                    return s
-    # 兜底：找 profile 为 Default / 本地 shell 的 session（无 host 变量）
-    for window in app.terminal_windows:
-        for tab in window.tabs:
-            for s in tab.sessions:
-                try:
-                    host = await s.async_get_variable("session.host")
-                except Exception:
-                    host = None
-                if not host:
-                    return s
-    raise ValueError("没有本地 shell session，请先 create_local_session 或手动开一个本地 tab")
+    sessions = [s for w in app.terminal_windows for t in w.tabs for s in t.sessions]
+    # 优先: 注册表登记的 id 仍然存活且是本地 session
+    reg_id = _registry_load().get("local-shell")
+    for s in sessions:
+        if s.session_id == reg_id:
+            return s
+    # 兜底: 第一个本地 session
+    for s in sessions:
+        if await _is_local_session(s):
+            return s
+    raise ValueError("没有本地 shell session（将自动创建）")
 
 
 async def _ensure_local_session() -> iterm2.Session:
     """获取可用的本地 session；注册表指向的已关闭则自动重建并重新登记."""
     try:
-        session = await _find_local_session()
-        # 校验注册表命中的还活着（活跃 session 列表里有它）
-        app = await _get_app()
-        alive = any(s.session_id == session.session_id
-                    for w in app.terminal_windows for t in w.tabs for s in t.sessions)
-        if alive:
-            return session
+        return await _find_local_session()
     except ValueError:
         pass
     session = await _create_tab(profile="Default")
