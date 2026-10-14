@@ -44,7 +44,25 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[dict]:
         ws_task.cancel()
 
 
-mcp = FastMCP("iterm2", lifespan=app_lifespan)
+mcp = FastMCP(
+    "iterm2",
+    instructions=(
+        "iTerm2 终端操作工具集。使用指引:\n"
+        "1. 连接服务器: create_session(profile=名字)，session 自动以 profile 名注册，"
+        "之后所有工具用该名字寻址（name_or_id）\n"
+        "2. 执行命令: 一律用 send_command（打字可见），不要尝试任何静默执行\n"
+        "3. 上传/下载文件: 用 upload_file / download_file（Mac 主动 scp，公网服务器也可用），"
+        "不要用 send_command 在服务器里反向 scp\n"
+        "4. 首次对某台服务器传输文件前，先对该服务器已登录 session 调用一次 distribute_key"
+        "（零密码配免密），之后传输全自动\n"
+        "5. 传输后用 check_transfer 做 md5 校验；返回 NEED_INPUT 时提示用户在 local-shell "
+        "tab 手动输密码，等待用户确认后重试\n"
+        "6. 命令发出后用 read_screen 查看输出；需要中断用 interrupt\n"
+        "7. 切换 iTerm2 窗口聚焦用 focus_session；本地 shell 传输通道是 local-shell "
+        "（失效会自动重建）"
+    ),
+    lifespan=app_lifespan,
+)
 
 # name -> session_id 注册表。
 # 背景: shell integration 会在每条命令后用 OSC 转义序列把 session 标题重置回
@@ -364,6 +382,23 @@ async def _find_local_session() -> iterm2.Session:
     raise ValueError("没有本地 shell session，请先 create_local_session 或手动开一个本地 tab")
 
 
+async def _ensure_local_session() -> iterm2.Session:
+    """获取可用的本地 session；注册表指向的已关闭则自动重建并重新登记."""
+    try:
+        session = await _find_local_session()
+        # 校验注册表命中的还活着（活跃 session 列表里有它）
+        app = await _get_app()
+        alive = any(s.session_id == session.session_id
+                    for w in app.terminal_windows for t in w.tabs for s in t.sessions)
+        if alive:
+            return session
+    except ValueError:
+        pass
+    session = await _create_tab(profile="Default")
+    _registry_set("local-shell", session.session_id)
+    return session
+
+
 @mcp.tool()
 async def create_local_session() -> str:
     """新建一个本地 shell tab，注册为 'local-shell'，用于文件传输时 Mac 主动发起 scp."""
@@ -403,14 +438,22 @@ async def _wait_transfer_done(session: iterm2.Session, timeout: float = TRANSFER
 @mcp.tool()
 async def upload_file(session_name: str, local_path: str, remote_path: str,
                       server_user: str, server_host: str) -> str:
-    """上传本地文件到服务器（Mac 主动 scp，任何网络拓扑可用）.
+    """上传本地文件到服务器（推荐方式；Mac 主动发起 scp，任何网络拓扑可用，含公网服务器）.
 
-    在 local-shell session 里执行: scp local_path server_user@server_host:remote_path
-    若出现密码提示，请在 local-shell tab 里手动输入服务器密码。
+    不要用 send_command 发送 scp——请直接调用本工具。
+    服务器应已通过 distribute_key 配置免密；若返回 NEED_INPUT，提示用户在 local-shell
+    tab 里手动输入服务器密码。传输完成自动校验本地文件是否生成。
+
+    Args:
+        session_name: 仅作标识，实际传输统一走 local-shell
+        local_path: Mac 上的源文件绝对路径
+        remote_path: 服务器上的目标路径（目录以 / 结尾）
+        server_user: 服务器登录用户名
+        server_host: 服务器地址（IP 或域名）
     """
     if not os.path.exists(local_path):
         raise ValueError(f"本地文件不存在: {local_path}")
-    local = await _find_local_session()
+    local = await _ensure_local_session()
     await local.async_send_text("clear\n")
     await asyncio.sleep(0.3)
     await local.async_send_text(
@@ -429,12 +472,20 @@ async def upload_file(session_name: str, local_path: str, remote_path: str,
 @mcp.tool()
 async def download_file(session_name: str, remote_path: str, local_path: str,
                         server_user: str, server_host: str) -> str:
-    """从服务器下载文件到本地（Mac 主动 scp，任何网络拓扑可用）.
+    """从服务器下载文件到本地（推荐方式；Mac 主动发起 scp，任何网络拓扑可用，含公网服务器）.
 
-    在 local-shell session 里执行: scp server_user@server_host:remote_path local_path
-    若出现密码提示，请在 local-shell tab 里手动输入服务器密码。
+    不要在服务器 session 里用 send_command 发 scp 反向拉取——服务器可能路由不到 Mac。
+    请直接调用本工具。服务器应已通过 distribute_key 配置免密；若返回 NEED_INPUT，
+    提示用户在 local-shell tab 里手动输入服务器密码。
+
+    Args:
+        session_name: 仅作标识，实际传输统一走 local-shell
+        remote_path: 服务器上的源文件绝对路径
+        local_path: Mac 上的目标路径（目录则自动补文件名）
+        server_user: 服务器登录用户名
+        server_host: 服务器地址（IP 或域名）
     """
-    local = await _find_local_session()
+    local = await _ensure_local_session()
     if os.path.isdir(local_path):
         local_path = os.path.join(local_path, os.path.basename(remote_path))
     await local.async_send_text("clear\n")
@@ -488,6 +539,9 @@ async def distribute_key(name_or_id: str, server_user: str, server_host: str) ->
 
     同时预扫描服务器 host key 到本地 known_hosts，消除之后 scp 的首连指纹确认。
     一次性配置；之后该服务器对 Mac 免密，scp/ssh 全自动。
+
+    使用时机: 首次要对某台服务器 upload_file/download_file 之前，先对本服务器的
+    已登录 session 调用一次本工具。全程零密码。
     """
     session = await _require_session(name_or_id)
     pubkey = _local_pubkey()
@@ -501,7 +555,7 @@ async def distribute_key(name_or_id: str, server_user: str, server_host: str) ->
     screen = "".join(contents.line(i).string for i in range(contents.number_of_lines))
     scanned = ""
     try:
-        local = await _find_local_session()
+        local = await _ensure_local_session()
         if await _preset_host_key(local, server_host):
             scanned = "，并已预扫描 host key（之后 scp 无首次指纹确认）"
     except ValueError:
@@ -525,7 +579,7 @@ async def check_transfer(session_name: str, remote_path: str, local_path: str,
     if not os.path.exists(local_path):
         return f"本地文件不存在: {local_path}"
     local_md5 = _md5(local_path)
-    local = await _find_local_session()
+    local = await _ensure_local_session()
     await local.async_send_text(
         f'ssh {server_user}@{server_host} "md5sum {remote_path}"\n'
     )
