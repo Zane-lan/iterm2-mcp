@@ -88,7 +88,7 @@ async def main(conn):
     check("session 确实已关", len(alive) == 0)
 
 
-asyncio.run(iterm2.run_until_complete(main))
+iterm2.run_until_complete(main)
 print(f"\n结果: {len(PASS)} 通过 / {len(FAIL)} 失败")
 if FAIL:
     print("失败项:", FAIL)

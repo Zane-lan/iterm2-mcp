@@ -4,5 +4,6 @@ __pycache__/
 .venv/
 dist/
 *.pem
-.env.env
 .env
+.env.env
+宣传片/

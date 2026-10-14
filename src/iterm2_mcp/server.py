@@ -347,6 +347,11 @@ async def interrupt(name_or_id: str) -> str:
 TRANSFER_TIMEOUT = 120  # scp 等待完成的兜底超时（秒）
 
 
+def _shquote(s: str) -> str:
+    """shell 单引号转义，防路径/参数里的引号、$() 等元字符闭合引号注入命令."""
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
 def _local_pubkey() -> str:
     """读 Mac 默认公钥（优先 ed25519）."""
     home = os.path.expanduser("~")
@@ -457,7 +462,7 @@ async def upload_file(session_name: str, local_path: str, remote_path: str,
     await local.async_send_text("clear\n")
     await asyncio.sleep(0.3)
     await local.async_send_text(
-        f'scp "{local_path}" "{server_user}@{server_host}:{remote_path}"\n'
+        f"scp {_shquote(local_path)} {_shquote(server_user + '@' + server_host + ':' + remote_path)}\n"
     )
     result = await _wait_transfer_done(local)
     if result.startswith("NEED_INPUT"):
@@ -491,7 +496,7 @@ async def download_file(session_name: str, remote_path: str, local_path: str,
     await local.async_send_text("clear\n")
     await asyncio.sleep(0.3)
     await local.async_send_text(
-        f'scp "{server_user}@{server_host}:{remote_path}" "{local_path}"\n'
+        f"scp {_shquote(server_user + '@' + server_host + ':' + remote_path)} {_shquote(local_path)}\n"
     )
     result = await _wait_transfer_done(local)
     if result.startswith("NEED_INPUT"):
@@ -580,8 +585,10 @@ async def check_transfer(session_name: str, remote_path: str, local_path: str,
         return f"本地文件不存在: {local_path}"
     local_md5 = _md5(local_path)
     local = await _ensure_local_session()
+    # 远端路径要过两层 shell：本地引号保证完整送达远端命令行，再对远端 shell 转义一次
+    remote_cmd = "md5sum " + _shquote(remote_path)
     await local.async_send_text(
-        f'ssh {server_user}@{server_host} "md5sum {remote_path}"\n'
+        f"ssh {_shquote(server_user + '@' + server_host)} {_shquote(remote_cmd)}\n"
     )
     result = await _wait_transfer_done(local, timeout=30)
     if result.startswith("NEED_INPUT"):
