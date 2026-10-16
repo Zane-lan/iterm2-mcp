@@ -55,10 +55,14 @@ mcp = FastMCP(
         "不要用 send_command 在服务器里反向 scp\n"
         "4. 首次对某台服务器传输文件前，先对该服务器已登录 session 调用一次 distribute_key"
         "（零密码配免密），之后传输全自动\n"
-        "5. 传输后用 check_transfer 做 md5 校验；返回 NEED_INPUT 时提示用户在 local-shell "
+        "5. server_user/server_host 一旦 distribute_key 就固定了写法：后续 upload_file / "
+        "download_file / check_transfer 必须传完全相同的 user@host 字符串。"
+        "严禁把 IP 换成 localhost、主机名或别名——ssh 会当成另一个条目，免密失效。"
+        "传错写法时工具会直接报错并列出已登记的写法，按提示改用登记的写法即可\n"
+        "6. 传输后用 check_transfer 做 md5 校验；返回 NEED_INPUT 时提示用户在 local-shell "
         "tab 手动输密码，等待用户确认后重试\n"
-        "6. 命令发出后用 read_screen 查看输出；需要中断用 interrupt\n"
-        "7. 切换 iTerm2 窗口聚焦用 focus_session；本地 shell 传输通道是 local-shell "
+        "7. 命令发出后用 read_screen 查看输出；需要中断用 interrupt\n"
+        "8. 切换 iTerm2 窗口聚焦用 focus_session；本地 shell 传输通道是 local-shell "
         "（失效会自动重建）"
     ),
     lifespan=app_lifespan,
@@ -74,15 +78,26 @@ import os
 REGISTRY_PATH = os.path.expanduser("~/.config/iterm2-mcp/registry.json")
 
 
-def _registry_load() -> dict[str, str]:
+def _registry_load() -> dict:
+    """读注册表。兼容两代结构：纯 name->id 映射（旧）或含 transfer_keys 段（新）."""
     try:
         with open(REGISTRY_PATH) as f:
-            return json.load(f)
+            data = json.load(f)
     except (OSError, ValueError):
         return {}
+    if not isinstance(data, dict):
+        return {}
+    return data
 
 
-def _registry_save(reg: dict[str, str]) -> None:
+def _session_registry(reg: dict) -> dict[str, str]:
+    """从注册表数据里取 name->session_id 段（兼容旧扁平结构）."""
+    if "transfer_keys" in reg:
+        return {k: v for k, v in reg.items() if k != "transfer_keys"}
+    return reg
+
+
+def _registry_save(reg: dict) -> None:
     os.makedirs(os.path.dirname(REGISTRY_PATH), exist_ok=True)
     with open(REGISTRY_PATH, "w") as f:
         json.dump(reg, f, ensure_ascii=False, indent=2)
@@ -90,15 +105,58 @@ def _registry_save(reg: dict[str, str]) -> None:
 
 def _registry_set(name: str, session_id: str) -> None:
     reg = _registry_load()
+    sessions = _session_registry(reg)
     # 同一 session 换名时清理旧名
-    reg = {k: v for k, v in reg.items() if v != session_id}
-    reg[name] = session_id
-    _registry_save(reg)
+    sessions = {k: v for k, v in sessions.items() if v != session_id}
+    sessions[name] = session_id
+    _registry_write(sessions, _transfer_keys())
 
 
 def _registry_id_for(name_or_id: str) -> Optional[str]:
     """注册表精确命中则返回 session_id，否则 None."""
-    return _registry_load().get(name_or_id)
+    return _session_registry(_registry_load()).get(name_or_id)
+
+
+def _registry_write(sessions: dict[str, str], transfer_keys: set[str]) -> None:
+    """统一落盘：sessions 段 + （可选）transfer_keys 段."""
+    data: dict = dict(sessions)
+    if transfer_keys:
+        data["transfer_keys"] = {k: True for k in sorted(transfer_keys)}
+    _registry_save(data)
+
+
+def _transfer_keys() -> set[str]:
+    """已配免密的 user@host 集合."""
+    reg = _registry_load()
+    tk = reg.get("transfer_keys")
+    return set(tk) if isinstance(tk, dict) else set()
+
+
+def _transfer_key_set(user: str, host: str) -> None:
+    keys = _transfer_keys()
+    keys.add(user + "@" + host)
+    _registry_write(_session_registry(_registry_load()), keys)
+
+
+def _require_transfer_key(user: str, host: str) -> None:
+    """传输前校验该 user@host 已配过免密，没配过就报错并提示已登记的写法.
+
+    背景: distribute_key 的免密与 host key 都按调用时的精确写法生效——
+    authorized_keys 是 per-user 的，known_hosts 按你敲的地址匹配。
+    另一个会话用别名（localhost/主机名）传文件会静默卡在密码提示，
+    这里把该故障提前变成显式报错。
+    """
+    known = _transfer_keys()
+    if user + "@" + host in known:
+        return
+    listing = "\n".join(f"- {k}" for k in sorted(known)) or "（还没有任何登记）"
+    raise ValueError(
+        f"{user}@{host} 未配置过免密（或写法与 distribute_key 时不一致——"
+        f"IP/主机名/localhost 会被 ssh 当成不同条目，请用与当时完全相同的写法）。"
+        f"已登记的免密条目:\n{listing}\n"
+        f"若确认是同一台机器但写法不同，请先用当时的 session 重新 distribute_key，"
+        f"或对当前写法再 distribute_key 一次。"
+    )
 
 
 
@@ -195,7 +253,7 @@ async def list_profiles() -> str:
 async def list_sessions() -> str:
     """列出所有 iTerm2 窗口/tab/session，含 session id、name、所属 profile."""
     app = await _get_app()
-    reg = _registry_load()
+    reg = _session_registry(_registry_load())
     id_to_reg_name = {v: k for k, v in reg.items()}
     lines = []
     for w_idx, window in enumerate(app.terminal_windows):
@@ -290,9 +348,9 @@ async def close_session(name_or_id: str) -> str:
     """关闭指定 session（按 name 或 session id）。"""
     session = await _require_session(name_or_id)
     await session.async_close()
-    reg = _registry_load()
-    reg = {k: v for k, v in reg.items() if v != session.session_id}
-    _registry_save(reg)
+    sessions = {k: v for k, v in _session_registry(_registry_load()).items()
+                if v != session.session_id}
+    _registry_write(sessions, _transfer_keys())
     return f"已关闭 session {name_or_id!r}"
 
 
@@ -382,7 +440,7 @@ async def _find_local_session() -> iterm2.Session:
     app = await _get_app()
     sessions = [s for w in app.terminal_windows for t in w.tabs for s in t.sessions]
     # 优先: 注册表登记的 id 仍然存活且是本地 session
-    reg_id = _registry_load().get("local-shell")
+    reg_id = _session_registry(_registry_load()).get("local-shell")
     for s in sessions:
         if s.session_id == reg_id:
             return s
@@ -458,6 +516,7 @@ async def upload_file(session_name: str, local_path: str, remote_path: str,
     """
     if not os.path.exists(local_path):
         raise ValueError(f"本地文件不存在: {local_path}")
+    _require_transfer_key(server_user, server_host)
     local = await _ensure_local_session()
     await local.async_send_text("clear\n")
     await asyncio.sleep(0.3)
@@ -490,6 +549,7 @@ async def download_file(session_name: str, remote_path: str, local_path: str,
         server_user: 服务器登录用户名
         server_host: 服务器地址（IP 或域名）
     """
+    _require_transfer_key(server_user, server_host)
     local = await _ensure_local_session()
     if os.path.isdir(local_path):
         local_path = os.path.join(local_path, os.path.basename(remote_path))
@@ -547,6 +607,9 @@ async def distribute_key(name_or_id: str, server_user: str, server_host: str) ->
 
     使用时机: 首次要对某台服务器 upload_file/download_file 之前，先对本服务器的
     已登录 session 调用一次本工具。全程零密码。
+
+    注意: server_user/server_host 会被登记为该服务器的免密写法，之后传输工具
+    必须用完全相同的写法（known_hosts 按 host 写法精确匹配）。
     """
     session = await _require_session(name_or_id)
     pubkey = _local_pubkey()
@@ -566,7 +629,8 @@ async def distribute_key(name_or_id: str, server_user: str, server_host: str) ->
     except ValueError:
         pass  # 没有本地 session 时跳过预扫描，不阻塞公钥分发
     if "KEY_DISTRIBUTED" in screen:
-        return f"公钥已分发到 {name_or_id}{scanned}。之后对 {server_user}@{server_host} 的 scp/ssh 免密"
+        _transfer_key_set(server_user, server_host)
+        return f"公钥已分发到 {name_or_id}{scanned}。之后对 {server_user}@{server_host} 的 scp/ssh 免密（免密写法已登记为 {server_user}@{server_host}，传输时请用相同写法）"
     return f"分发命令已发出，请用 read_screen 确认结果{scanned}"
 
 
@@ -583,6 +647,7 @@ async def check_transfer(session_name: str, remote_path: str, local_path: str,
         return h.hexdigest()
     if not os.path.exists(local_path):
         return f"本地文件不存在: {local_path}"
+    _require_transfer_key(server_user, server_host)
     local_md5 = _md5(local_path)
     local = await _ensure_local_session()
     # 远端路径要过两层 shell：本地引号保证完整送达远端命令行，再对远端 shell 转义一次

