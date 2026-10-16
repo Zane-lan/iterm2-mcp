@@ -134,6 +134,8 @@ pip install iterm2 "mcp[cli]>=1,<2"   # homebrew Python: add --user --break-syst
 
 ## Troubleshooting
 
+**"A failed transfer leaves the terminal stuck."** Before every transfer the server interrupts any foreground process, force-clears the screen (`\033[2J\033[H`, not the `clear` builtin) and waits until the screen settles — so a password prompt left over from a previous failed attempt can no longer swallow the next command or corrupt its result.
+
 **"Passwordless works in one session but not another."** Passwordless state lives in two places: your public key in the server's `~/.ssh/authorized_keys` (per **user**) and the host key in your Mac's `~/.ssh/known_hosts` (matched by the **exact host string** you typed). So `root@10.10.10.136` and `mbs@10.10.10.136` are different targets, and `root@localhost` is a different target from `root@10.10.10.136` even on the same machine. Always pass `server_user`/`server_host` exactly as you did in `distribute_key`; since 0.2.4 the transfer tools reject any unregistered spelling with an error listing the registered ones.
 
 ## Verification

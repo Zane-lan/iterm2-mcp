@@ -470,6 +470,41 @@ async def create_local_session() -> str:
     return f"已创建本地 shell session: id={session.session_id}（注册名 local-shell）"
 
 
+async def _prime_clean_screen(session: iterm2.Session, timeout: float = 6.0) -> str:
+    """传输前把屏幕清干净，返回空串表示就绪，否则返回阻塞原因说明.
+
+    直接发 clear 是不够的：若 screen 上还挂着一个交互式密码提示（上一次传输
+    失败留下的），clear 会作为「密码」被吃掉，之后的 scp 命令与旧输出混在一屏，
+    使 _wait_transfer_done 的状态判定失真。这里先 Ctrl+C 打断任何挂起进程、
+    强制清屏，再等到屏幕稳定成单个提示符才继续。
+    """
+    # 1. 打断任何挂起的前台进程（挂着的密码提示、未结束的 scp）
+    await session.async_send_text("\x03")
+    await asyncio.sleep(0.4)
+    # 2. 强制清屏并归位光标（不依赖 clear 命令是否被 shell 正常解释）
+    await session.async_send_text("printf '\\033[2J\\033[H'\n")
+    await asyncio.sleep(0.4)
+    # 3. 等到屏幕不再变化（提示符重绘完成）
+    deadline = asyncio.get_event_loop().time() + timeout
+    last = None
+    stable_since = None
+    while asyncio.get_event_loop().time() < deadline:
+        contents = await session.async_get_screen_contents()
+        lines = [contents.line(i).string.rstrip() for i in range(contents.number_of_lines)
+                 if contents.line(i).string.strip()]
+        screen = "\n".join(lines)
+        if screen != last:
+            last = screen
+            stable_since = None
+        else:
+            if stable_since is None:
+                stable_since = asyncio.get_event_loop().time()
+            elif asyncio.get_event_loop().time() - stable_since >= 0.5:
+                return ""
+        await asyncio.sleep(0.25)
+    return "TIMEOUT: 无法取得干净的 local-shell 屏幕（可能有前台进程占着终端）"
+
+
 async def _wait_transfer_done(session: iterm2.Session, timeout: float = TRANSFER_TIMEOUT) -> str:
     """等待 scp 传输结束：提示符回归（屏幕最后一行不再变化且含主机名提示）或出现错误."""
     deadline = asyncio.get_event_loop().time() + timeout
@@ -518,8 +553,9 @@ async def upload_file(session_name: str, local_path: str, remote_path: str,
         raise ValueError(f"本地文件不存在: {local_path}")
     _require_transfer_key(server_user, server_host)
     local = await _ensure_local_session()
-    await local.async_send_text("clear\n")
-    await asyncio.sleep(0.3)
+    blocked = await _prime_clean_screen(local)
+    if blocked:
+        return f"传输未开始：{blocked}"
     await local.async_send_text(
         f"scp {_shquote(local_path)} {_shquote(server_user + '@' + server_host + ':' + remote_path)}\n"
     )
@@ -553,8 +589,9 @@ async def download_file(session_name: str, remote_path: str, local_path: str,
     local = await _ensure_local_session()
     if os.path.isdir(local_path):
         local_path = os.path.join(local_path, os.path.basename(remote_path))
-    await local.async_send_text("clear\n")
-    await asyncio.sleep(0.3)
+    blocked = await _prime_clean_screen(local)
+    if blocked:
+        return f"传输未开始：{blocked}"
     await local.async_send_text(
         f"scp {_shquote(server_user + '@' + server_host + ':' + remote_path)} {_shquote(local_path)}\n"
     )
@@ -650,6 +687,9 @@ async def check_transfer(session_name: str, remote_path: str, local_path: str,
     _require_transfer_key(server_user, server_host)
     local_md5 = _md5(local_path)
     local = await _ensure_local_session()
+    blocked = await _prime_clean_screen(local)
+    if blocked:
+        return f"校验未开始：{blocked}"
     # 远端路径要过两层 shell：本地引号保证完整送达远端命令行，再对远端 shell 转义一次
     remote_cmd = "md5sum " + _shquote(remote_path)
     await local.async_send_text(
